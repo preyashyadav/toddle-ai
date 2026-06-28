@@ -1,0 +1,79 @@
+# NPU Chat — ExecuTorch + Qualcomm QNN on the Samsung S25 Ultra
+
+A minimal Android app that runs an on-device **Qwen** LLM chat on the **Snapdragon 8 Elite Hexagon
+NPU** (SoC **SM8750**), using **ExecuTorch** with the **Qualcomm QNN backend**. Tokens stream into a
+Compose chat UI, fully offline.
+
+> Scope: text chat only. (Image/camera demos with the InternVL3 VLM are intentionally deferred.)
+
+---
+
+## What you provide
+
+This repo is the **app source**. Three artifacts are supplied by you (they are large/proprietary and
+not committed):
+
+| Artifact | Where it goes | Source |
+|---|---|---|
+| `executorch.aar` (QNN-enabled) | `app/libs/executorch.aar` | built with `scripts/build_android_library.sh` (Linux/WSL) |
+| Qualcomm `.so` (Hexagon v79) | `app/src/main/jniLibs/arm64-v8a/` | QNN SDK 2.37.0 |
+| Model `.pte` + tokenizer | pushed to device `/data/local/tmp/llm/` | your downloaded `qwen…_SM8750` package |
+
+See the `PLACE_*` notes in `app/libs/` and `app/src/main/jniLibs/arm64-v8a/` for exact file lists.
+
+---
+
+## Build & run
+
+### 1. Build the QNN-enabled `executorch.aar` (one time, Linux/WSL)
+```bash
+source $QNN_SDK_ROOT/bin/envsetup.sh          # QNN SDK 2.37.0
+export ANDROID_NDK_ROOT=/path/to/ndk/26c
+export EXECUTORCH_ROOT=/path/to/executorch
+export BUILD_AAR_DIR=$EXECUTORCH_ROOT/aar-out
+cd "$EXECUTORCH_ROOT" && ./scripts/build_android_library.sh
+```
+Copy `aar-out/executorch.aar` → `app/libs/executorch.aar`.
+Copy the Qualcomm `.so` (see jniLibs note) → `app/src/main/jniLibs/arm64-v8a/`.
+
+### 2. Open in Android Studio (Mac)
+Open this folder, let it sync, then **Run** onto the S25 Ultra (USB debugging on).
+*(The bundled JDK + Gradle handle the build; CLI `./gradlew installDebug` also works with JDK 17–21.)*
+
+### 3. Push the model to the device
+```bash
+adb shell mkdir -p /data/local/tmp/llm
+adb push hybrid_llama_qnn.pte /data/local/tmp/llm/
+adb push tokenizer.json       /data/local/tmp/llm/
+```
+If the app reports the tokenizer is unsupported, convert once on the Mac and push that instead:
+```bash
+python -m pytorch_tokenizers.tools ... tokenizer.json -> tokenizer.bin   # see ExecuTorch docs
+adb push tokenizer.bin /data/local/tmp/llm/
+```
+
+### 4. Chat
+Launch the app → it loads the model → type a prompt → tokens stream from the NPU.
+
+---
+
+## Verify it's really on the NPU
+```bash
+adb logcat | grep -iE "qnn|htp|hexagon|executorch"
+```
+Look for the QNN/HTP backend initializing and `libQnnHtpV79Skel.so` loading, with **no CPU fallback**.
+Toggle airplane mode — generation still works (100% on-device).
+
+---
+
+## How it works (code map)
+| File | Role |
+|---|---|
+| `ModelConfig.kt` | on-device file paths, model-presence checks |
+| `ChatTemplate.kt` | renders the Qwen `<|im_start|>` prompt format (the runtime does NOT apply `chat_template.jinja`) |
+| `LlmEngine.kt` | wraps `org.pytorch.executorch.extension.llm.LlmModule`; single engine thread; streaming `Flow<GenEvent>` |
+| `ChatViewModel.kt` | model load state machine, conversation, tok/s |
+| `ChatScreen.kt` | Compose UI: bubbles, input, setup help |
+
+Because the `.pte` is QNN-delegated, `LlmModule.generate()` executes on the Hexagon NPU; the app code
+is backend-agnostic.

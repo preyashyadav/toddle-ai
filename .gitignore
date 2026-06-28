@@ -1,0 +1,9 @@
+.gradle/
+build/
+/local.properties
+.idea/
+*.iml
+.DS_Store
+# Large native artifacts supplied by the user (not committed)
+/app/libs/*.aar
+/app/src/main/jniLibs/**/*.so
