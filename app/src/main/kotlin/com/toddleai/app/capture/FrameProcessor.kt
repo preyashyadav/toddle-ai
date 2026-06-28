@@ -7,6 +7,9 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
 import androidx.camera.core.ImageProxy
+import com.toddleai.app.analysis.FramingGuidance
+import com.toddleai.app.analysis.FramingGuide
+import com.toddleai.app.analysis.FramingHint
 import com.toddleai.app.analysis.GaitEventDetector
 import com.toddleai.app.analysis.GuidanceEngine
 import com.toddleai.app.analysis.GuidanceState
@@ -27,11 +30,15 @@ class FrameProcessor(
     private val guidanceEngine: GuidanceEngine,
 ) {
     private val gaitEventDetector = GaitEventDetector()
+    private val framingGuide = FramingGuide()
     private val recentQualities = ArrayDeque<FrameQuality>()
     private var previousPoseFrame: PoseFrame? = null
 
     private val _currentPose = MutableStateFlow<PoseFrame?>(null)
     val currentPose: StateFlow<PoseFrame?> = _currentPose.asStateFlow()
+
+    private val _framingGuidance = MutableStateFlow(SEARCHING_FRAMING)
+    val framingGuidance: StateFlow<FramingGuidance> = _framingGuidance.asStateFlow()
 
     private val _currentQuality = MutableStateFlow<FrameQuality?>(null)
     val currentQuality: StateFlow<FrameQuality?> = _currentQuality.asStateFlow()
@@ -54,15 +61,19 @@ class FrameProcessor(
     private val qualityBuffer = mutableListOf<FrameQuality>()
 
     fun processFrame(imageProxy: ImageProxy) {
+        var bitmap: Bitmap? = null
         try {
-            val bitmap = imageProxy.toBitmapWithRotation() ?: return
+            bitmap = imageProxy.toBitmapWithRotation() ?: return
             val poseFrame = poseEstimator.estimate(bitmap)
             _inferenceTimeMs.value = poseEstimator.getLastInferenceTimeMs()
 
             if (poseFrame == null) {
+                _framingGuidance.value = SEARCHING_FRAMING
                 publishGuidance()
                 return
             }
+
+            _framingGuidance.value = framingGuide.evaluate(poseFrame)
 
             val fps = estimateFps(poseFrame)
             val frameQuality = qualityGate.assessFrame(
@@ -83,6 +94,9 @@ class FrameProcessor(
             _inferenceTimeMs.value = poseEstimator.getLastInferenceTimeMs()
             publishGuidance()
         } finally {
+            // Pose landmarks are copied out, so the per-frame bitmap can be freed immediately instead
+            // of churning the heap during a long capture (estimate() runs synchronously).
+            bitmap?.recycle()
             imageProxy.close()
         }
     }
@@ -104,6 +118,7 @@ class FrameProcessor(
         previousPoseFrame = null
         _currentPose.value = null
         _currentQuality.value = null
+        _framingGuidance.value = SEARCHING_FRAMING
         _guidance.value = GuidanceState(
             message = "Start walking when you're ready",
             stepCount = 0,
@@ -246,6 +261,7 @@ class FrameProcessor(
     }
 
     private companion object {
+        val SEARCHING_FRAMING = FramingGuidance(FramingHint.SEARCHING, "Point the camera at your child")
         const val DEFAULT_FPS = 30f
         const val MIN_FPS = 10f
         const val MAX_FPS = 60f

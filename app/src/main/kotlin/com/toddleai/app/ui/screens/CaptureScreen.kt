@@ -1,7 +1,12 @@
 package com.toddleai.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.toddleai.app.PoseModelStatus
 import com.toddleai.app.ToddleAISessionViewModel
 import com.toddleai.app.capture.CameraManager
+import com.toddleai.app.ui.components.FramingArrowOverlay
 import com.toddleai.app.ui.components.GuidanceOverlay
 import com.toddleai.app.ui.components.SkeletonOverlay
 import kotlinx.coroutines.delay
@@ -63,8 +69,29 @@ fun CaptureScreen(
     val currentPose by sessionViewModel.currentPose.collectAsState()
     val currentQuality by sessionViewModel.currentQuality.collectAsState()
     val guidance by sessionViewModel.guidance.collectAsState()
+    val framingGuidance by sessionViewModel.framingGuidance.collectAsState()
     val inferenceTimeMs by sessionViewModel.inferenceTimeMs.collectAsState()
     val poseModelStatus by sessionViewModel.poseModelStatus.collectAsState()
+
+    // Runtime CAMERA permission. Without this gate the preview binds nothing on first entry and the
+    // screen stays black with no way to recover after the user grants access (the camera was never
+    // restarted). Keying camera start on `hasCameraPermission` makes it bind the moment it flips true.
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasCameraPermission = granted
+    }
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
 
     var previewSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var isRecording by rememberSaveable { mutableStateOf(false) }
@@ -107,15 +134,17 @@ fun CaptureScreen(
             }
         }
 
-        LaunchedEffect(lifecycleOwner, previewView) {
-            previewView.post {
-                cameraManager.startCamera(
-                    lifecycleOwner = lifecycleOwner,
-                    previewView = previewView,
-                    onFrame = { imageProxy ->
-                        sessionViewModel.processFrame(imageProxy)
-                    },
-                )
+        LaunchedEffect(lifecycleOwner, previewView, hasCameraPermission) {
+            if (hasCameraPermission) {
+                previewView.post {
+                    cameraManager.startCamera(
+                        lifecycleOwner = lifecycleOwner,
+                        previewView = previewView,
+                        onFrame = { imageProxy ->
+                            sessionViewModel.processFrame(imageProxy)
+                        },
+                    )
+                }
             }
         }
 
@@ -153,6 +182,45 @@ fun CaptureScreen(
             recordingDuration = recordingDurationSeconds,
             modifier = Modifier.matchParentSize(),
         )
+
+        // Real-time camera-aiming arrows (tilt/pan/distance) so the parent can frame the best clip.
+        if (hasCameraPermission && poseModelStatus !is PoseModelStatus.Error) {
+            FramingArrowOverlay(
+                guidance = framingGuidance,
+                modifier = Modifier.matchParentSize(),
+            )
+        }
+
+        if (!hasCameraPermission) {
+            Column(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    text = "Camera access is needed to record a walking clip",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                )
+                Text(
+                    text = "ToddleAI analyzes the video on-device and never uploads it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
+                )
+                FloatingActionButton(
+                    onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                ) {
+                    Text(
+                        text = "Allow camera",
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                    )
+                }
+            }
+        }
 
         IconButton(
             onClick = onBack,

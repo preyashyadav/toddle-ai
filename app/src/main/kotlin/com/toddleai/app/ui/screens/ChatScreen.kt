@@ -112,7 +112,9 @@ private fun buildAssistantAnswer(
     question: String?,
     observations: List<com.toddleai.app.data.models.Observation>,
 ): String {
-    val summary = observations.joinToString(" ") { "${it.measurement}. ${it.note}" }.ifBlank {
+    val summary = observations.joinToString(" ") {
+        if (it.context.isNotBlank()) "${it.measurement}. ${it.context}" else "${it.measurement}."
+    }.ifBlank {
         "No analysis result is available yet. Record a walking clip first."
     }
 

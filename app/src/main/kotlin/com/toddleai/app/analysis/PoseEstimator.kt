@@ -100,6 +100,8 @@ class PoseEstimator(private val context: Context) {
                         frameIndex = frameIndexOverride ?: nextFrameIndex++,
                         timestamp = timestampOverride ?: SystemClock.elapsedRealtime(),
                         landmarks = landmarks,
+                        sourceWidth = bitmap.width,
+                        sourceHeight = bitmap.height,
                     )
                 }
             } catch (t: Throwable) {
@@ -128,6 +130,8 @@ class PoseEstimator(private val context: Context) {
                     frameIndex = frameIndexOverride ?: nextFrameIndex++,
                     timestamp = timestampOverride ?: SystemClock.elapsedRealtime(),
                     landmarks = landmarks,
+                    sourceWidth = bitmap.width,
+                    sourceHeight = bitmap.height,
                 )
             }
         } catch (t: Throwable) {

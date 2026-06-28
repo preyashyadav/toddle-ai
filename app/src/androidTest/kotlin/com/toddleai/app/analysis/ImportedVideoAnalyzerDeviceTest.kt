@@ -73,7 +73,7 @@ class ImportedVideoAnalyzerDeviceTest {
         Log.i(TAG, "  processedFrames = ${result.processedFrameCount}")
         Log.i(TAG, "  events          = ${result.events.size}")
         Log.i(TAG, "  issues          = ${result.assessment.issues}")
-        result.observations.forEach { Log.i(TAG, "  observation: ${it.measurement} | ${it.note}") }
+        result.observations.forEach { Log.i(TAG, "  [${it.status}] ${it.measurement} — ${it.context}") }
 
         poseEstimator.release()
 

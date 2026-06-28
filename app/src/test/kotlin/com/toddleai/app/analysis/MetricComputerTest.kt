@@ -32,9 +32,10 @@ class MetricComputerTest {
             ),
         )
 
-        assertEquals(0.45f, metrics.leftMeanStepTime, 0.0001f)
-        assertEquals(0.5f, metrics.rightMeanStepTime, 0.0001f)
-        assertEquals(50f, metrics.timingDifferenceMs, 0.0001f)
+        // Steps (alternating): R-ending = [0.4, 0.3] -> mean 0.35; L-ending = [0.6, 0.7] -> mean 0.65.
+        assertEquals(0.65f, metrics.leftMeanStepTime, 0.0001f)
+        assertEquals(0.35f, metrics.rightMeanStepTime, 0.0001f)
+        assertEquals(300f, metrics.timingDifferenceMs, 0.0001f)
     }
 
     @Test

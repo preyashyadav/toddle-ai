@@ -19,7 +19,6 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,15 +38,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.toddleai.app.analysis.ReplayAnalyzer.AnalysisResult
-import com.toddleai.app.data.GaitNorms
 import com.toddleai.app.data.models.CaptureAssessment
 import com.toddleai.app.data.models.CaptureConfidence
 import com.toddleai.app.data.models.GaitEvent
+import com.toddleai.app.data.models.MetricStatus
 import com.toddleai.app.data.models.Observation
 import com.toddleai.app.data.models.Side
 import com.toddleai.app.data.models.StepMeasurement
 import com.toddleai.app.data.models.TemporalMetrics
-import com.toddleai.app.ui.components.MetricCard
 import com.toddleai.app.ui.components.ObservationCard
 import com.toddleai.app.ui.theme.SoftIvory
 import com.toddleai.app.ui.theme.WarmSand
@@ -60,14 +58,10 @@ fun ResultsScreen(
     result: AnalysisResult,
     childName: String,
     childAgeMonths: Int,
-    inferenceBackend: String,
     onAskToddleAI: () -> Unit,
     onRecordAnother: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val cadenceRange = GaitNorms.getCadenceRange(childAgeMonths)
-    var showQualityBreakdown by remember { mutableStateOf(true) }
-
     Scaffold(
         containerColor = SoftIvory,
     ) { padding ->
@@ -87,7 +81,6 @@ fun ResultsScreen(
             HeaderSection(
                 childName = childName,
                 childAgeMonths = childAgeMonths,
-                assessment = result.assessment,
                 onBack = onBack,
             )
 
@@ -96,27 +89,13 @@ fun ResultsScreen(
                     assessment = result.assessment,
                     onRecordAnother = onRecordAnother,
                 )
-                FooterSection(
-                    analysisTimeMs = result.analysisTimeMs,
-                    inferenceBackend = inferenceBackend,
-                )
+                FooterSection()
                 return@Column
             }
 
-            QualityBreakdownSection(
-                result = result,
-                expanded = showQualityBreakdown,
-                onToggle = { showQualityBreakdown = !showQualityBreakdown },
-            )
-
-            MetricsSection(
-                result = result,
-                cadenceRangeLabel = "${format0(cadenceRange.low)}-${format0(cadenceRange.high)} steps/min",
-                onAskToddleAI = onAskToddleAI,
-            )
-
             ObservationsSection(
                 observations = result.observations,
+                usableStepCount = result.metrics?.usableStepCount ?: 0,
             )
 
             ActionsSection(
@@ -124,10 +103,7 @@ fun ResultsScreen(
                 onRecordAnother = onRecordAnother,
             )
 
-            FooterSection(
-                analysisTimeMs = result.analysisTimeMs,
-                inferenceBackend = inferenceBackend,
-            )
+            FooterSection()
         }
     }
 }
@@ -141,7 +117,6 @@ fun ResultsScreen(
         result = demoAnalysisResult(),
         childName = "Avery",
         childAgeMonths = 26,
-        inferenceBackend = "MediaPipe Pose Landmarker (CPU)",
         onAskToddleAI = onAskAssistant,
         onRecordAnother = onBack,
         onBack = onBack,
@@ -152,7 +127,6 @@ fun ResultsScreen(
 private fun HeaderSection(
     childName: String,
     childAgeMonths: Int,
-    assessment: CaptureAssessment,
     onBack: () -> Unit,
 ) {
     Card(
@@ -164,19 +138,11 @@ private fun HeaderSection(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "Back",
-                    )
-                }
-
-                ConfidenceBadge(confidence = assessment.confidence)
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "Back",
+                )
             }
 
             Text(
@@ -229,115 +195,22 @@ private fun RejectedSection(
 }
 
 @Composable
-private fun QualityBreakdownSection(
-    result: AnalysisResult,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggle),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Capture Quality Breakdown",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Icon(
-                    imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = null,
-                )
-            }
-
-            AnimatedVisibility(visible = expanded) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    QualityLine(
-                        text = if (result.assessment.confidence == CaptureConfidence.HIGH || result.assessment.confidence == CaptureConfidence.MEDIUM) {
-                            "✓ Both feet stayed visible often enough for replay analysis"
-                        } else {
-                            "⚠ Foot visibility was intermittent during capture"
-                        },
-                    )
-                    QualityLine(
-                        text = if (result.assessment.issues.any { it.contains("Camera movement", ignoreCase = true) }) {
-                            "⚠ Camera movement was detected at points"
-                        } else {
-                            "✓ Camera stayed stable through the best segment"
-                        },
-                    )
-                    QualityLine(
-                        text = "✓ ${result.assessment.usableStepCount} usable steps detected",
-                    )
-                    QualityLine(
-                        text = qualityDetailLine(result),
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetricsSection(
-    result: AnalysisResult,
-    cadenceRangeLabel: String,
-    onAskToddleAI: () -> Unit,
-) {
-    val metrics = result.metrics ?: return
-
-    Column(
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        SectionTitle("Temporal Metrics")
-        MetricCard(
-            title = "Cadence",
-            value = "${format0(metrics.cadence)} steps/min",
-            supportingText = "Published context for this age is approximately $cadenceRangeLabel.",
-            onExplain = onAskToddleAI,
-        )
-        MetricCard(
-            title = "Step time",
-            value = "${format2(metrics.meanStepTime)}s average",
-            supportingText = "${metrics.usableStepCount} usable steps contributed to this estimate.",
-            onExplain = onAskToddleAI,
-        )
-        MetricCard(
-            title = "Left / Right timing",
-            value = "Left ${format2(metrics.leftMeanStepTime)}s | Right ${format2(metrics.rightMeanStepTime)}s | Diff: ${format0(metrics.timingDifferenceMs)}ms",
-            supportingText = "This compares average alternating step timing across the accepted segment.",
-            onExplain = onAskToddleAI,
-        )
-        MetricCard(
-            title = "Consistency",
-            value = "Step-time variation: ${format0(normalizedCovPercent(metrics.stepTimeCoV))}%",
-            supportingText = "Lower variation generally means a steadier rhythm within this recording.",
-            onExplain = onAskToddleAI,
-        )
-    }
-}
-
-@Composable
 private fun ObservationsSection(
     observations: List<Observation>,
+    usableStepCount: Int,
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SectionTitle("Observations")
+        SectionTitle("Gait Metrics")
         observations.forEach { observation ->
             ObservationCard(observation = observation)
         }
+        Text(
+            text = "Based on $usableStepCount walking steps in this clip.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -365,10 +238,7 @@ private fun ActionsSection(
 }
 
 @Composable
-private fun FooterSection(
-    analysisTimeMs: Long,
-    inferenceBackend: String,
-) {
+private fun FooterSection() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -377,7 +247,7 @@ private fun FooterSection(
     ) {
         Column(
             modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
                 text = "Research prototype — not a clinical assessment",
@@ -385,37 +255,11 @@ private fun FooterSection(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "Processed entirely on this device",
+                text = "Processed on-device · nothing was uploaded",
                 style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                text = "No data was transmitted",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            HorizontalDivider()
-            Text(
-                text = "Analysis time: ${analysisTimeMs} ms",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = "Inference backend: $inferenceBackend",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
-}
-
-@Composable
-private fun QualityLine(
-    text: String,
-) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurface,
-    )
 }
 
 @Composable
@@ -428,43 +272,6 @@ private fun SectionTitle(text: String) {
     )
 }
 
-@Composable
-private fun ConfidenceBadge(
-    confidence: CaptureConfidence,
-) {
-    val (label, color, textColor) = when (confidence) {
-        CaptureConfidence.HIGH -> Triple("HIGH", Color(0xFFD8EEDB), Color(0xFF285C31))
-        CaptureConfidence.MEDIUM -> Triple("MEDIUM", Color(0xFFF6E2B8), Color(0xFF855F11))
-        CaptureConfidence.LOW -> Triple("LOW", Color(0xFFF3D1B4), Color(0xFF8A4F17))
-        CaptureConfidence.REJECT -> Triple("REJECT", Color(0xFFF5D1D1), Color(0xFF8F3131))
-    }
-
-    Surface(
-        color = color,
-        shape = RoundedCornerShape(999.dp),
-    ) {
-        Text(
-            text = label,
-            color = textColor,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-        )
-    }
-}
-
-private fun qualityDetailLine(result: AnalysisResult): String {
-    val issue = result.assessment.issues.firstOrNull()
-    return when {
-        issue != null && issue.contains("Feet were hidden", ignoreCase = true) ->
-            "⚠ Minor occlusion points were excluded from analysis"
-        result.processedFrameCount > 0 ->
-            "✓ ${result.processedFrameCount} frames were retained in the best-quality segment"
-        else ->
-            "✓ The best continuous walking segment was accepted for analysis"
-    }
-}
-
 private fun formatAge(ageMonths: Int): String {
     val years = ageMonths / 12
     val months = ageMonths % 12
@@ -474,14 +281,6 @@ private fun formatAge(ageMonths: Int): String {
         else -> "$months mo"
     }
 }
-
-private fun normalizedCovPercent(value: Float): Float {
-    return if (value > 1f) value else value * 100f
-}
-
-private fun format0(value: Float): String = String.format(Locale.US, "%.0f", value)
-
-private fun format2(value: Float): String = String.format(Locale.US, "%.2f", value)
 
 private fun demoAnalysisResult(): AnalysisResult {
     val metrics = TemporalMetrics(
@@ -494,12 +293,14 @@ private fun demoAnalysisResult(): AnalysisResult {
             StepMeasurement(duration = 0.45f, endingSide = Side.RIGHT, confidence = 0.88f),
         ),
         meanStepTime = 0.425f,
-        cadence = 141.2f,
+        medianStepTime = 0.42f,
+        cadence = 142.9f,
         leftMeanStepTime = 0.41f,
         rightMeanStepTime = 0.44f,
         timingDifferenceMs = 30f,
         symmetryRatio = 0.93f,
-        stepTimeCoV = 0.08f,
+        stepTimeAsymmetryPct = 7f,
+        stepTimeCoV = 8f,
         usableStepCount = 6,
         usableCycleCount = 3,
     )
@@ -507,17 +308,27 @@ private fun demoAnalysisResult(): AnalysisResult {
     val observations = listOf(
         Observation(
             type = "cadence",
-            measurement = "141 steps/min",
-            context = "Published research reports cadence ranges of approximately 120-160 steps/min for children around this age, with substantial individual variation.",
-            note = "This cadence is presented as context for this recording.",
-            confidence = "HIGH",
+            measurement = "Cadence: 143 steps/min",
+            context = "Typical for a 2-year-old: 120–160 steps/min.",
+            note = "In the typical range.",
+            confidence = "",
+            status = MetricStatus.TYPICAL,
         ),
         Observation(
-            type = "summary",
-            measurement = "Mean step time 0.43s",
-            context = "The temporal measures from this recording stayed close to the broad developmental ranges used for age-based context.",
-            note = "These observations describe this recording only.",
-            confidence = "HIGH",
+            type = "symmetry",
+            measurement = "Left–right symmetry: 7% difference",
+            context = "Even left/right step timing is typically within 10% (left 0.41 s, right 0.44 s).",
+            note = "In the typical range.",
+            confidence = "",
+            status = MetricStatus.TYPICAL,
+        ),
+        Observation(
+            type = "variability",
+            measurement = "Step rhythm: 8% variation",
+            context = "Step timing is typically within 15% variation; young children are naturally a bit higher.",
+            note = "In the typical range.",
+            confidence = "",
+            status = MetricStatus.TYPICAL,
         ),
     )
 

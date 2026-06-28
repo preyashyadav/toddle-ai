@@ -18,13 +18,38 @@ class GaitEventDetector {
     fun detectEvents(frames: List<PoseFrame>, fps: Float): List<GaitEvent> {
         if (frames.isEmpty() || fps <= 0f) return emptyList()
 
+        // Walking direction from the robust (median) slope of hip-center x over time, so a heel strike
+        // is always the *forward* extremum of the foot trajectory regardless of which way the child
+        // walks across the frame (engine spec §10.3–10.4).
+        val direction = estimateDirectionSign(frames)
+
         val minPeakDistance = max(1, ceil(0.3f * fps).toInt())
-        val leftEvents = detectSideEvents(frames, fps, Side.LEFT, minPeakDistance)
-        val rightEvents = detectSideEvents(frames, fps, Side.RIGHT, minPeakDistance)
+        val leftEvents = detectSideEvents(frames, fps, Side.LEFT, minPeakDistance, direction)
+        val rightEvents = detectSideEvents(frames, fps, Side.RIGHT, minPeakDistance, direction)
 
         return (leftEvents + rightEvents)
             .sortedBy { it.frameIndex }
             .filterPhysiologicStepTimes()
+    }
+
+    private fun estimateDirectionSign(frames: List<PoseFrame>): Float {
+        val deltas = ArrayList<Float>(frames.size)
+        var previousHipX: Float? = null
+        for (frame in frames) {
+            val leftHip = frame.leftHip()
+            val rightHip = frame.rightHip()
+            if (leftHip.visibility < MIN_HIP_VISIBILITY || rightHip.visibility < MIN_HIP_VISIBILITY) {
+                previousHipX = null
+                continue
+            }
+            val hipCenterX = (leftHip.x + rightHip.x) / 2f
+            previousHipX?.let { deltas += hipCenterX - it }
+            previousHipX = hipCenterX
+        }
+        if (deltas.isEmpty()) return 1f
+        deltas.sort()
+        val medianDelta = deltas[deltas.size / 2]
+        return if (medianDelta < 0f) -1f else 1f
     }
 
     private fun detectSideEvents(
@@ -32,6 +57,7 @@ class GaitEventDetector {
         fps: Float,
         side: Side,
         minPeakDistance: Int,
+        direction: Float,
     ): List<GaitEvent> {
         val rawSignal = DoubleArray(frames.size) { index ->
             val frame = frames[index]
@@ -40,7 +66,7 @@ class GaitEventDetector {
                 Double.NaN
             } else {
                 val sacrumX = (frame.leftHip().x + frame.rightHip().x) / 2f
-                (heel.x - sacrumX).toDouble()
+                (direction * (heel.x - sacrumX)).toDouble()
             }
         }
 
@@ -212,6 +238,7 @@ class GaitEventDetector {
         const val MOVING_AVERAGE_WINDOW = 5
         const val MAX_INTERPOLATION_GAP = 5
         const val MIN_HEEL_VISIBILITY = 0.5f
+        const val MIN_HIP_VISIBILITY = 0.5f
         const val MIN_PROMINENCE_RATIO = 0.15
         const val MIN_STEP_TIME_SECONDS = 0.25f
         const val MAX_STEP_TIME_SECONDS = 1.5f

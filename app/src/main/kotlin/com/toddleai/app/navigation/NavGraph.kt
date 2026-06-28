@@ -87,7 +87,6 @@ fun NavGraph() {
                     result = result,
                     childName = childName.ifBlank { "Your child" },
                     childAgeMonths = sessionViewModel.childAgeMonths() ?: 0,
-                    inferenceBackend = sessionViewModel.runtimeBackendLabel(),
                     onAskToddleAI = {
                         sessionViewModel.setAssistantQuestion("Explain this recording")
                         navController.navigate(Route.Chat.route)

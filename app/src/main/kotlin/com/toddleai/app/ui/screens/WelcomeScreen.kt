@@ -161,13 +161,13 @@ fun WelcomeScreen(
                     OutlinedTextField(
                         value = childAgeMonthsInput,
                         onValueChange = onChildAgeMonthsChange,
-                        label = { Text("Child's age in months") },
+                        label = { Text("Child's age in years") },
                         supportingText = {
-                            Text("We use age to provide appropriate context for movement observations.")
+                            Text("Used to compare against typical walking for this age.")
                         },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         isError = childAgeMonthsInput.isBlank(),
                     )
                 }

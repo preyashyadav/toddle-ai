@@ -151,53 +151,64 @@ class VideoFrameDecoder {
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     }
 
+    /**
+     * Converts a YUV_420_888 [Image] to NV21 using **bounds-checked absolute reads**. This tolerates
+     * the per-device plane quirks that broke the naive version (last row shorter than rowStride,
+     * Y pixelStride > 1, and semi-planar NV12 where U/V share a buffer with pixelStride 2) — those
+     * caused a BufferUnderflowException on some clips. `duplicate()` avoids disturbing the codec's
+     * own buffer position.
+     */
     private fun yuv420ToNv21(image: Image): ByteArray {
         val width = image.width
         val height = image.height
-        val ySize = width * height
-        val nv21 = ByteArray(ySize + ySize / 2)
+        val nv21 = ByteArray(width * height * 3 / 2)
 
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
 
-        // Y plane (respect rowStride).
-        val yBuffer = yPlane.buffer
+        val yBuffer = yPlane.buffer.duplicate()
+        val uBuffer = uPlane.buffer.duplicate()
+        val vBuffer = vPlane.buffer.duplicate()
+
         val yRowStride = yPlane.rowStride
+        val yPixelStride = yPlane.pixelStride
+        val uRowStride = uPlane.rowStride
+        val uPixelStride = uPlane.pixelStride
+        val vRowStride = vPlane.rowStride
+        val vPixelStride = vPlane.pixelStride
+
         var pos = 0
-        if (yRowStride == width) {
-            yBuffer.get(nv21, 0, ySize)
-            pos = ySize
-        } else {
-            val row = ByteArray(yRowStride)
-            for (r in 0 until height) {
-                yBuffer.position(r * yRowStride)
-                yBuffer.get(row, 0, yRowStride)
-                System.arraycopy(row, 0, nv21, pos, width)
+
+        // Y plane.
+        for (row in 0 until height) {
+            val rowStart = row * yRowStride
+            if (yPixelStride == 1) {
+                val count = minOf(width, yBuffer.limit() - rowStart).coerceAtLeast(0)
+                if (count > 0) {
+                    yBuffer.position(rowStart)
+                    yBuffer.get(nv21, pos, count)
+                }
                 pos += width
+            } else {
+                for (col in 0 until width) {
+                    val idx = rowStart + col * yPixelStride
+                    nv21[pos++] = if (idx < yBuffer.limit()) yBuffer.get(idx) else 0
+                }
             }
         }
 
-        // Interleave V,U -> NV21, respecting row/pixel strides.
+        // Interleaved V,U for NV21.
         val chromaHeight = height / 2
         val chromaWidth = width / 2
-        val uBuffer = uPlane.buffer
-        val vBuffer = vPlane.buffer
-        val uRowStride = uPlane.rowStride
-        val vRowStride = vPlane.rowStride
-        val uPixelStride = uPlane.pixelStride
-        val vPixelStride = vPlane.pixelStride
-
-        val uRow = ByteArray(uRowStride)
-        val vRow = ByteArray(vRowStride)
-        for (r in 0 until chromaHeight) {
-            uBuffer.position(r * uRowStride)
-            uBuffer.get(uRow, 0, minOf(uRowStride, uBuffer.remaining()))
-            vBuffer.position(r * vRowStride)
-            vBuffer.get(vRow, 0, minOf(vRowStride, vBuffer.remaining()))
-            for (c in 0 until chromaWidth) {
-                nv21[pos++] = vRow[c * vPixelStride]
-                nv21[pos++] = uRow[c * uPixelStride]
+        for (row in 0 until chromaHeight) {
+            val uRowStart = row * uRowStride
+            val vRowStart = row * vRowStride
+            for (col in 0 until chromaWidth) {
+                val vIdx = vRowStart + col * vPixelStride
+                val uIdx = uRowStart + col * uPixelStride
+                nv21[pos++] = if (vIdx < vBuffer.limit()) vBuffer.get(vIdx) else 0
+                nv21[pos++] = if (uIdx < uBuffer.limit()) uBuffer.get(uIdx) else 0
             }
         }
         return nv21

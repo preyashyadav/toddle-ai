@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 class ToddleAISessionViewModel(
     application: Application,
@@ -57,6 +58,7 @@ class ToddleAISessionViewModel(
     val currentPose: StateFlow<PoseFrame?> = frameProcessor.currentPose
     val currentQuality: StateFlow<FrameQuality?> = frameProcessor.currentQuality
     val guidance: StateFlow<GuidanceState> = frameProcessor.guidance
+    val framingGuidance: StateFlow<com.toddleai.app.analysis.FramingGuidance> = frameProcessor.framingGuidance
     val inferenceTimeMs: StateFlow<Float> = frameProcessor.inferenceTimeMs
 
     private val _childName = MutableStateFlow("")
@@ -90,6 +92,7 @@ class ToddleAISessionViewModel(
     val importedVideoUri: StateFlow<String?> = _importedVideoUri.asStateFlow()
 
     private var modelLoadJob: Job? = null
+    private var loadedPoseAsset: String? = null
 
     init {
         observeBackendPreference()
@@ -100,7 +103,12 @@ class ToddleAISessionViewModel(
     }
 
     fun updateChildAgeMonthsInput(value: String) {
-        _childAgeMonthsInput.value = value.filter(Char::isDigit).take(3)
+        // Stored as the parent-facing age in YEARS (digits + one decimal point).
+        val cleaned = value.filter { it.isDigit() || it == '.' }
+        val singleDot = cleaned.indexOf('.').let { firstDot ->
+            if (firstDot < 0) cleaned else cleaned.substring(0, firstDot + 1) + cleaned.substring(firstDot + 1).replace(".", "")
+        }
+        _childAgeMonthsInput.value = singleDot.take(4)
     }
 
     fun dismissOnboarding() {
@@ -191,7 +199,8 @@ class ToddleAISessionViewModel(
         }
     }
 
-    fun childAgeMonths(): Int? = _childAgeMonthsInput.value.toIntOrNull()
+    fun childAgeMonths(): Int? =
+        _childAgeMonthsInput.value.toFloatOrNull()?.let { (it * 12f).roundToInt() }
 
     fun setAssistantQuestion(question: String) {
         _assistantQuestion.value = question
@@ -216,10 +225,7 @@ class ToddleAISessionViewModel(
         // Reflect the engine that actually produced the landmarks. Gait analysis runs on the
         // MediaPipe on-device PoseLandmarker; the ExecuTorch/QNN path is the LLM chat backbone.
         if (poseEstimator.producesGaitLandmarks) {
-            return when (_activeBackend.value) {
-                InferenceBackend.XNNPACK -> "MediaPipe Pose (CPU/XNNPACK, on-device)"
-                InferenceBackend.QNN -> "MediaPipe Pose (GPU, on-device)"
-            }
+            return "MediaPipe Pose (CPU/XNNPACK, on-device)"
         }
         return when (_activeBackend.value) {
             InferenceBackend.XNNPACK -> "ExecuTorch XNNPACK"
@@ -237,31 +243,37 @@ class ToddleAISessionViewModel(
     }
 
     private fun loadPoseModel(backend: InferenceBackend) {
+        val candidate = findPoseModelAsset(backend)
+        if (candidate == null) {
+            _poseModelStatus.value = PoseModelStatus.Error(
+                "No pose model asset found in app/src/main/assets.",
+            )
+            return
+        }
+
+        // The gait pose model is the same `.task` regardless of inference backend, so don't reload
+        // (and never re-create MediaPipe concurrently) when only the backend preference changes —
+        // a redundant second load races the native runtime and crashed it (SIGBUS). Backend selection
+        // applies to the ExecuTorch LLM, not pose.
+        if (candidate == loadedPoseAsset) return
+        loadedPoseAsset = candidate
+
         modelLoadJob?.cancel()
         modelLoadJob = viewModelScope.launch {
             _poseModelStatus.value = PoseModelStatus.Loading
-
-            val candidate = findPoseModelAsset(backend)
-            if (candidate == null) {
-                _poseModelStatus.value = PoseModelStatus.Error(
-                    "No ${backend.displayName()} pose model asset found in app/src/main/assets.",
-                )
-                return@launch
-            }
-
             try {
-                // QNN -> GPU delegate is the closest on-device accelerator MediaPipe can use inside
-                // the app sandbox (the Hexagon NPU is reserved for the ExecuTorch LLM path). Loading
-                // does native init + asset I/O, so keep it off the main thread.
-                val useGpu = backend == InferenceBackend.QNN
+                // MediaPipe pose always runs on the stable CPU/XNNPACK delegate. The GPU delegate
+                // crashes natively on this device class, and the Hexagon NPU is reserved for the LLM.
+                // Loading does native init + asset I/O, so keep it off the main thread.
                 withContext(Dispatchers.IO) {
-                    poseEstimator.load(candidate, useGpu)
+                    poseEstimator.load(candidate, useGpu = false)
                 }
                 frameProcessor.clearBuffers()
                 _poseModelStatus.value = PoseModelStatus.Ready(candidate)
             } catch (t: Throwable) {
+                loadedPoseAsset = null
                 _poseModelStatus.value = PoseModelStatus.Error(
-                    "${backend.displayName()} pose model failed: ${t.message ?: "unknown error"}",
+                    "Pose model failed: ${t.message ?: "unknown error"}",
                 )
             }
         }

@@ -10,6 +10,10 @@ data class PoseFrame(
     val frameIndex: Int,
     val timestamp: Long,
     val landmarks: List<Landmark>,
+    // Pixel size of the source frame the landmarks were detected in. Lets consumers normalize
+    // landmark positions to [0,1] for in-frame framing guidance. 0 = unknown (e.g. smoothed/replay).
+    val sourceWidth: Int = 0,
+    val sourceHeight: Int = 0,
 )
 
 object MediaPipeLandmarks {
