@@ -1,8 +1,43 @@
-# NPU Chat — ExecuTorch + Qualcomm QNN on the Samsung S25 Ultra
+# ToddleAI — on-device toddler gait analysis (+ NPU Chat)
 
-A minimal Android app that runs an on-device **Qwen** LLM chat on the **Snapdragon 8 Elite Hexagon
-NPU** (SoC **SM8750**), using **ExecuTorch** with the **Qualcomm QNN backend**. Tokens stream into a
-Compose chat UI, fully offline.
+ToddleAI analyzes toddler walking videos **locally on-device** and produces gait observations, with
+an on-device **Qwen** LLM assistant to explain results. Two complementary on-device engines:
+
+| Workload | Engine | Where it runs |
+|---|---|---|
+| **Pose / gait** (33-landmark BlazePose skeleton incl. feet) | **MediaPipe Tasks PoseLandmarker** (`pose_landmarker_full.task`) | on-device, CPU (XNNPACK) or GPU |
+| **LLM chat** (explain the recording) | **ExecuTorch + Qualcomm QNN** (Qwen `.pte`) | on-device, Hexagon NPU (SM8750) |
+
+All inference is local; toggle airplane mode and both still work.
+
+## Gait pipeline (quick start)
+
+The pose model `app/src/main/assets/pose_landmarker_full.task` must be present (it is in this
+checkout; if not, `app/src/main/assets/README.md` has the one-line download). Then:
+
+```bash
+# JDK 17 is required (AGP 8.5.2). Android Studio's bundled JBR also works.
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+./gradlew :app:installDebug      # or open in Android Studio and Run
+```
+
+Record (or import) a **side-view** clip of the toddler walking with **both feet visible**; ToddleAI
+samples frames, runs PoseLandmarker on-device, detects heel-strike gait events, and reports temporal
+observations. No detector/ROI staging or model conversion is needed — MediaPipe handles preprocessing
+internally and emits the full lower-body landmark set the gait analysis requires.
+
+> Why MediaPipe for pose: the bundled ExecuTorch `pose_landmark_*.pte` is the AI-Hub landmark **stage**
+> that only outputs landmarks 0-24 (head → hips) with **no feet** (see `samples/pose/README.md`), so it
+> cannot produce gait-quality lower-body landmarks. The `.task` model is the only on-device artifact
+> that can. ExecuTorch/QNN remains the on-device backbone for the LLM chat below.
+
+---
+
+## NPU Chat — ExecuTorch + Qualcomm QNN on the Samsung S25 Ultra
+
+The assistant runs an on-device **Qwen** LLM chat on the **Snapdragon 8 Elite Hexagon NPU** (SoC
+**SM8750**), using **ExecuTorch** with the **Qualcomm QNN backend**. Tokens stream into a Compose chat
+UI, fully offline.
 
 > Scope: text chat only. (Image/camera demos with the InternVL3 VLM are intentionally deferred.)
 

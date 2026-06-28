@@ -60,6 +60,7 @@ fun ResultsScreen(
     result: AnalysisResult,
     childName: String,
     childAgeMonths: Int,
+    inferenceBackend: String,
     onAskToddleAI: () -> Unit,
     onRecordAnother: () -> Unit,
     onBack: () -> Unit,
@@ -97,7 +98,7 @@ fun ResultsScreen(
                 )
                 FooterSection(
                     analysisTimeMs = result.analysisTimeMs,
-                    inferenceBackend = "ExecuTorch XNNPACK",
+                    inferenceBackend = inferenceBackend,
                 )
                 return@Column
             }
@@ -125,7 +126,7 @@ fun ResultsScreen(
 
             FooterSection(
                 analysisTimeMs = result.analysisTimeMs,
-                inferenceBackend = "ExecuTorch XNNPACK",
+                inferenceBackend = inferenceBackend,
             )
         }
     }
@@ -140,6 +141,7 @@ fun ResultsScreen(
         result = demoAnalysisResult(),
         childName = "Avery",
         childAgeMonths = 26,
+        inferenceBackend = "MediaPipe Pose Landmarker (CPU)",
         onAskToddleAI = onAskAssistant,
         onRecordAnother = onBack,
         onBack = onBack,

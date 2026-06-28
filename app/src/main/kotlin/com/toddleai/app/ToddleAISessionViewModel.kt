@@ -18,12 +18,14 @@ import com.toddleai.app.data.models.FrameQuality
 import com.toddleai.app.data.models.PoseFrame
 import com.toddleai.app.settings.InferenceBackend
 import com.toddleai.app.settings.InferenceSettings
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class ToddleAISessionViewModel(
     application: Application,
@@ -210,6 +212,21 @@ class ToddleAISessionViewModel(
         PoseModelStatus.Loading -> "Loading pose model…"
     }
 
+    fun runtimeBackendLabel(): String {
+        // Reflect the engine that actually produced the landmarks. Gait analysis runs on the
+        // MediaPipe on-device PoseLandmarker; the ExecuTorch/QNN path is the LLM chat backbone.
+        if (poseEstimator.producesGaitLandmarks) {
+            return when (_activeBackend.value) {
+                InferenceBackend.XNNPACK -> "MediaPipe Pose (CPU/XNNPACK, on-device)"
+                InferenceBackend.QNN -> "MediaPipe Pose (GPU, on-device)"
+            }
+        }
+        return when (_activeBackend.value) {
+            InferenceBackend.XNNPACK -> "ExecuTorch XNNPACK"
+            InferenceBackend.QNN -> "QNN"
+        }
+    }
+
     private fun observeBackendPreference() {
         viewModelScope.launch {
             inferenceSettings.backendPreference.collectLatest { backend ->
@@ -233,7 +250,13 @@ class ToddleAISessionViewModel(
             }
 
             try {
-                poseEstimator.load(candidate)
+                // QNN -> GPU delegate is the closest on-device accelerator MediaPipe can use inside
+                // the app sandbox (the Hexagon NPU is reserved for the ExecuTorch LLM path). Loading
+                // does native init + asset I/O, so keep it off the main thread.
+                val useGpu = backend == InferenceBackend.QNN
+                withContext(Dispatchers.IO) {
+                    poseEstimator.load(candidate, useGpu)
+                }
                 frameProcessor.clearBuffers()
                 _poseModelStatus.value = PoseModelStatus.Ready(candidate)
             } catch (t: Throwable) {
@@ -246,6 +269,12 @@ class ToddleAISessionViewModel(
 
     private fun findPoseModelAsset(backend: InferenceBackend): String? {
         val assets = listAssetFiles("")
+
+        // The MediaPipe `.task` PoseLandmarker is the only model that emits the 33-landmark layout
+        // (incl. feet) gait analysis needs, so it is always preferred regardless of backend. The
+        // ExecuTorch `.pte` landmark stage stops at the hips and cannot produce usable gait results.
+        assets.firstOrNull { it.isGaitPoseModelAsset() }?.let { return it }
+
         val backendHint = when (backend) {
             InferenceBackend.XNNPACK -> listOf("cpu", "xnn")
             InferenceBackend.QNN -> listOf("qnn")
@@ -258,8 +287,14 @@ class ToddleAISessionViewModel(
         }
     }
 
+    private fun String.isGaitPoseModelAsset(): Boolean {
+        return endsWith(".task", ignoreCase = true) && contains("pose", ignoreCase = true)
+    }
+
     private fun String.isPoseModelAsset(): Boolean {
-        return (endsWith(".pte", ignoreCase = true) || endsWith(".tflite", ignoreCase = true)) &&
+        return (endsWith(".pte", ignoreCase = true) ||
+            endsWith(".tflite", ignoreCase = true) ||
+            endsWith(".task", ignoreCase = true)) &&
             contains("pose", ignoreCase = true)
     }
 

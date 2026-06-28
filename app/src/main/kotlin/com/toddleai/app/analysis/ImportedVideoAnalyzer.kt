@@ -2,8 +2,9 @@ package com.toddleai.app.analysis
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.Log
+import com.toddleai.app.data.models.FrameStatus
 import com.toddleai.app.data.models.CaptureAssessment
 import com.toddleai.app.data.models.CaptureConfidence
 import com.toddleai.app.data.models.FrameQuality
@@ -11,8 +12,6 @@ import com.toddleai.app.data.models.Observation
 import com.toddleai.app.data.models.PoseFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlin.math.ceil
-import kotlin.math.max
 
 class ImportedVideoAnalyzer(
     private val context: Context,
@@ -21,59 +20,56 @@ class ImportedVideoAnalyzer(
     private val replayAnalyzer: ReplayAnalyzer,
 ) {
 
+    private val videoFrameDecoder = VideoFrameDecoder()
+
     suspend fun analyze(
         videoUri: Uri,
         childAgeMonths: Int,
         onProgress: (Float) -> Unit,
     ): ReplayAnalyzer.AnalysisResult = withContext(Dispatchers.Default) {
-        val retriever = MediaMetadataRetriever()
         try {
-            retriever.setDataSource(context, videoUri)
-
-            val durationMs = retriever
-                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?.toLongOrNull()
-                ?.coerceAtLeast(0L)
-                ?: 0L
-
-            if (durationMs <= 0L) {
-                return@withContext emptyResult("We couldn't read this video. Try another clip in MP4 or MOV format.")
-            }
-
-            val sampleIntervalMs = max(1L, (1000f / TARGET_ANALYSIS_FPS).toLong())
-            val expectedSamples = max(1, ceil(durationMs.toDouble() / sampleIntervalMs.toDouble()).toInt())
-
             val frames = mutableListOf<PoseFrame>()
             val frameQualities = mutableListOf<FrameQuality>()
             var previousFrame: PoseFrame? = null
-            var frameIndex = 0
 
-            var timestampMs = 0L
-            while (timestampMs <= durationMs) {
-                val bitmap = retriever.getFrameAtTime(
-                    timestampMs * 1000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST,
-                )
-
-                if (bitmap != null) {
-                    processBitmap(
-                        bitmap = bitmap,
-                        frameIndex = frameIndex,
-                        timestampMs = timestampMs,
-                        previousFrame = previousFrame,
-                        frames = frames,
-                        frameQualities = frameQualities,
-                    )?.let { previousFrame = it }
-                }
-
-                frameIndex++
-                timestampMs += sampleIntervalMs
-                val extractionProgress = (frameIndex.toFloat() / expectedSamples.toFloat()).coerceIn(0f, 1f)
-                onProgress(extractionProgress * EXTRACTION_PROGRESS_WEIGHT)
+            // Linear MediaCodec decode (NOT MediaMetadataRetriever.getFrameAtTime, which deadlocks on
+            // the first seek on some devices, e.g. S25 Ultra / Android 16). Pose runs per sampled frame.
+            Log.i(GAIT_TAG, "decode start uri=$videoUri")
+            val emitted = videoFrameDecoder.decode(
+                context = context,
+                uri = videoUri,
+                targetFps = TARGET_ANALYSIS_FPS,
+                onProgress = { p -> onProgress((p * EXTRACTION_PROGRESS_WEIGHT).coerceIn(0f, 1f)) },
+            ) { bitmap, timestampMs, index ->
+                processBitmap(
+                    bitmap = bitmap,
+                    frameIndex = index,
+                    timestampMs = timestampMs,
+                    previousFrame = previousFrame,
+                    frames = frames,
+                    frameQualities = frameQualities,
+                )?.let { previousFrame = it }
             }
 
+            // Make a run observable: how many sampled frames produced a pose, and the quality
+            // breakdown that drives accept/reject. Filter logcat with tag "ToddleAIGait".
+            val good = frameQualities.count { it.status == FrameStatus.GOOD }
+            val partial = frameQualities.count { it.status == FrameStatus.PARTIAL }
+            val rejected = frameQualities.count { it.status == FrameStatus.REJECTED }
+            val feetVisible = frameQualities.count { it.bothFeetVisible }
+            Log.i(
+                GAIT_TAG,
+                "import: decodedFrames=$emitted posedFrames=${frames.size} " +
+                    "status[good=$good partial=$partial rejected=$rejected] feetVisibleFrames=$feetVisible",
+            )
+
             if (frames.isEmpty() || frameQualities.isEmpty()) {
-                return@withContext emptyResult("No usable pose frames were found in this video. Try a brighter side-view walking clip.")
+                val message = if (emitted == 0) {
+                    "We couldn't read this video. Try another clip in MP4 or MOV format."
+                } else {
+                    "No usable pose frames were found in this video. Try a brighter side-view walking clip."
+                }
+                return@withContext emptyResult(message)
             }
 
             replayAnalyzer.analyze(
@@ -89,9 +85,9 @@ class ImportedVideoAnalyzer(
         } catch (_: SecurityException) {
             emptyResult("ToddleAI couldn't access that video anymore. Please pick it again.")
         } catch (t: Throwable) {
+            Log.w(GAIT_TAG, "video import failed", t)
             emptyResult("Video import failed: ${t.message ?: "unknown error"}")
         } finally {
-            retriever.release()
             onProgress(1f)
         }
     }
@@ -151,6 +147,7 @@ class ImportedVideoAnalyzer(
     }
 
     private companion object {
+        const val GAIT_TAG = "ToddleAIGait"
         const val TARGET_ANALYSIS_FPS = 15f
         const val EXTRACTION_PROGRESS_WEIGHT = 0.6f
         const val REPLAY_PROGRESS_WEIGHT = 0.4f

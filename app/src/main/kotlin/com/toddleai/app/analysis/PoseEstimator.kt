@@ -18,21 +18,36 @@ class PoseEstimator(private val context: Context) {
 
     private var module: Module? = null
     private var tfliteInterpreter: Any? = null
+    private var mediaPipe: MediaPipePoseLandmarker? = null
     private var lastInferenceTimeMs: Float = 0f
     private var nextFrameIndex: Int = 0
     private var loadedModelPath: String? = null
 
-    fun load(modelPath: String) {
+    /**
+     * True only when the loaded model emits the full 33-landmark BlazePose layout (incl. feet) that
+     * gait analysis requires. The ExecuTorch `.pte` landmark stage does NOT (it stops at the hips),
+     * so the rest of the app can use this to avoid presenting unusable "results".
+     */
+    var producesGaitLandmarks: Boolean = false
+        private set
+
+    fun load(modelPath: String, useGpu: Boolean = false) {
         release()
         loadedModelPath = modelPath
-
-        val assetFile = copyAssetToCache(modelPath)
         val loadStartNs = System.nanoTime()
         try {
-            if (assetFile.extension.equals("pte", ignoreCase = true)) {
-                module = Module.load(assetFile.absolutePath)
-                Log.i(TAG, "Loaded ExecuTorch pose model from ${assetFile.absolutePath}")
-            } else if (assetFile.extension.equals("tflite", ignoreCase = true)) {
+            // `.task` -> MediaPipe Tasks PoseLandmarker, the only gait-capable on-device path.
+            // It is NOT an ExecuTorch program; routing it through Module.load() segfaults natively,
+            // which is exactly what crashed the previous integration. MediaPipe reads straight from
+            // the APK asset, so we skip the copy-to-cache used by the ExecuTorch/TFLite paths.
+            if (modelPath.endsWith(".task", ignoreCase = true)) {
+                mediaPipe = MediaPipePoseLandmarker.fromAsset(context, modelPath, useGpu)
+                producesGaitLandmarks = true
+                return
+            }
+
+            val assetFile = copyAssetToCache(modelPath)
+            if (assetFile.extension.equals("tflite", ignoreCase = true)) {
                 tfliteInterpreter = loadTfliteInterpreter(assetFile)
                 Log.i(TAG, "Loaded TFLite pose fallback from ${assetFile.absolutePath}")
             } else {
@@ -71,8 +86,31 @@ class PoseEstimator(private val context: Context) {
         frameIndexOverride: Int? = null,
         timestampOverride: Long? = null,
     ): PoseFrame? {
-        val modelInput = preprocess(bitmap)
         val inferenceStartNs = System.nanoTime()
+
+        // MediaPipe handles its own preprocessing (letterbox + internal detector ROI), so feed it the
+        // raw bitmap rather than the 256x256 NHWC tensor the ExecuTorch path needs.
+        if (mediaPipe != null) {
+            return try {
+                val landmarks = mediaPipe?.estimate(bitmap)
+                if (landmarks == null || landmarks.size != MediaPipePoseLandmarker.FULL_BODY_LANDMARK_COUNT) {
+                    null
+                } else {
+                    PoseFrame(
+                        frameIndex = frameIndexOverride ?: nextFrameIndex++,
+                        timestamp = timestampOverride ?: SystemClock.elapsedRealtime(),
+                        landmarks = landmarks,
+                    )
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "MediaPipe pose estimation failed on current frame", t)
+                null
+            } finally {
+                lastInferenceTimeMs = nanosToMillis(System.nanoTime() - inferenceStartNs)
+            }
+        }
+
+        val modelInput = preprocess(bitmap)
 
         return try {
             val rawOutput = when {
@@ -103,6 +141,14 @@ class PoseEstimator(private val context: Context) {
     fun getLastInferenceTimeMs(): Float = lastInferenceTimeMs
 
     fun release() {
+        producesGaitLandmarks = false
+
+        try {
+            mediaPipe?.close()
+        } finally {
+            mediaPipe = null
+        }
+
         try {
             module?.close()
         } catch (t: Throwable) {

@@ -8,6 +8,7 @@ import com.toddleai.app.data.models.MediaPipeLandmarks
 import com.toddleai.app.data.models.Observation
 import com.toddleai.app.data.models.PoseFrame
 import com.toddleai.app.data.models.TemporalMetrics
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.max
@@ -44,6 +45,11 @@ class ReplayAnalyzer(
         val assessment = qualityGate.assessRecording(
             frameQualities = frameQualities,
             detectedSteps = detectedEvents.size,
+        )
+        Log.i(
+            GAIT_TAG,
+            "analyze: frames=${frames.size} fps=$fps detectedSteps=${detectedEvents.size} " +
+                "-> confidence=${assessment.confidence} bestSegment=[${assessment.bestSegmentStart}..${assessment.bestSegmentEnd}]",
         )
         onProgress(0.15f)
 
@@ -119,7 +125,13 @@ class ReplayAnalyzer(
 
         val startIndex = assessment.bestSegmentStart
         val endIndex = assessment.bestSegmentEnd
-        if (endIndex < startIndex) return emptyList()
+
+        // QualityGate collapses the segment to [0..0] when there is no run of >=30 consecutive GOOD
+        // frames (e.g. a slightly unstable hand-held / AI-generated clip). Rather than discard a clip
+        // that still produced usable steps, fall back to the whole posed sequence for replay; the
+        // downstream `hasRequiredLandmarks` filter + per-step physiologic checks still gate quality,
+        // and the LOW confidence label already communicates the reduced certainty to the user.
+        if (endIndex <= startIndex) return frames
 
         return frames.filter { frame ->
             frame.frameIndex in startIndex..endIndex
@@ -200,6 +212,7 @@ class ReplayAnalyzer(
     private fun nanosToMillis(durationNs: Long): Long = durationNs / 1_000_000L
 
     private companion object {
+        const val GAIT_TAG = "ToddleAIGait"
         const val MIN_REQUIRED_VISIBILITY = 0.5f
         const val SMOOTHING_RADIUS = 2
 
