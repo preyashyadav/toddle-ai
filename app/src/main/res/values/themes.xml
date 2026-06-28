@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Compose drives the UI; this Material3 theme just hosts the activity window. -->
-    <style name="Theme.NpuChat" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.ToddleAI" parent="Theme.Material3.DayNight.NoActionBar" />
 </resources>

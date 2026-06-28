@@ -15,8 +15,8 @@ not committed):
 
 | Artifact | Where it goes | Source |
 |---|---|---|
-| `executorch.aar` (QNN-enabled) | `app/libs/executorch.aar` | built with `scripts/build_android_library.sh` (Linux/WSL) |
-| Qualcomm `.so` (Hexagon v79) | `app/src/main/jniLibs/arm64-v8a/` | QNN SDK 2.37.0 |
+| `executorch.aar` (QNN-enabled) | default: `build-artifacts/executorch.aar` or `executorchAarPath` / `EXECUTORCH_AAR_PATH` | built with `scripts/build_android_library.sh` (Linux/WSL) |
+| Qualcomm `.so` (Hexagon v79) | auto-copied from `QNN_SDK_ROOT` at build time, or copied into `app/src/main/jniLibs/arm64-v8a/` | QNN SDK 2.37.0 |
 | Model `.pte` + tokenizer | pushed to device `/data/local/tmp/llm/` | your downloaded `qwen…_SM8750` package |
 
 See the `PLACE_*` notes in `app/libs/` and `app/src/main/jniLibs/arm64-v8a/` for exact file lists.
@@ -33,10 +33,32 @@ export EXECUTORCH_ROOT=/path/to/executorch
 export BUILD_AAR_DIR=$EXECUTORCH_ROOT/aar-out
 cd "$EXECUTORCH_ROOT" && ./scripts/build_android_library.sh
 ```
-Copy `aar-out/executorch.aar` → `app/libs/executorch.aar`.
-Copy the Qualcomm `.so` (see jniLibs note) → `app/src/main/jniLibs/arm64-v8a/`.
+Keep `aar-out/executorch.aar` in `build-artifacts/`, or point `executorchAarPath` / `EXECUTORCH_AAR_PATH`
+at wherever you stored it.
+If `QNN_SDK_ROOT` is set, Gradle stages the Qualcomm `.so` automatically during `preBuild`.
 
 ### 2. Open in Android Studio (Mac)
+Set the SDK paths once, then open this folder and **Run** onto the phone:
+
+```properties
+# local.properties (recommended, already gitignored)
+sdk.dir=/Users/you/Library/Android/sdk
+qnnSdkRoot=/absolute/path/to/qairt/2.37.0
+# Optional if you keep the AAR somewhere else:
+# executorchAarPath=/absolute/path/to/executorch.aar
+```
+
+Environment variables work too:
+
+```bash
+export ANDROID_SDK_ROOT="$HOME/Library/Android/sdk"
+export QNN_SDK_ROOT=/absolute/path/to/qairt/2.37.0
+# Optional override:
+# export EXECUTORCH_AAR_PATH=/absolute/path/to/executorch.aar
+```
+
+The project defaults to `/Users/preyashyadav/Documents/personal-projects/toddle-ai/build-artifacts/executorch.aar`, which already exists in this checkout.
+
 Open this folder, let it sync, then **Run** onto the S25 Ultra (USB debugging on).
 *(The bundled JDK + Gradle handle the build; CLI `./gradlew installDebug` also works with JDK 17–21.)*
 
@@ -63,6 +85,21 @@ adb logcat | grep -iE "qnn|htp|hexagon|executorch"
 ```
 Look for the QNN/HTP backend initializing and `libQnnHtpV79Skel.so` loading, with **no CPU fallback**.
 Toggle airplane mode — generation still works (100% on-device).
+
+## What this checkout already has
+- `build-artifacts/executorch.aar`
+- `build-artifacts/pose_detector_cpu.pte`
+- `build-artifacts/pose_detector_qnn.pte`
+- `build-artifacts/pose_landmark_cpu.pte`
+- `build-artifacts/pose_landmark_qnn.pte`
+
+## What is still missing before the Android app can launch the QNN runtime
+- `libQnnHtp.so`
+- `libQnnHtpV79Stub.so`
+- `libQnnSystem.so`
+- `libQnnHtpV79Skel.so`
+
+If `QNN_SDK_ROOT` points at your Qualcomm AI Engine Direct / QAIRT SDK, Gradle now stages these automatically during `preBuild`. If not, it will fail with a direct message telling you what path is missing.
 
 ---
 

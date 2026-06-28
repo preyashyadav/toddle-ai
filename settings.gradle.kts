@@ -21,5 +21,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NpuChat"
+rootProject.name = "ToddleAI"
 include(":app")

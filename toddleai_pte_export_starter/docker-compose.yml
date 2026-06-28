@@ -1,0 +1,24 @@
+services:
+  toddleai-pte-export:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: toddleai-pte-export:latest
+    platform: linux/amd64
+    working_dir: /workspace/starter
+    stdin_open: true
+    tty: true
+    environment:
+      QNN_SDK_ROOT: /opt/qnn
+      EXECUTORCH_WORKSPACE: /workspace
+      STARTER_ROOT: /workspace/starter
+      ANDROID_SDK_ROOT: /opt/android/sdk
+      ANDROID_HOME: /opt/android/sdk
+      ANDROID_NDK: /opt/android/sdk/ndk/27.2.12479018
+      ANDROID_NDK_ROOT: /opt/android/sdk/ndk/27.2.12479018
+    volumes:
+      - .:/workspace/starter
+      - ./workspace:/workspace
+      - ${QNN_SDK_HOST_PATH:?Set QNN_SDK_HOST_PATH in .env or the shell}:/opt/qnn:ro
