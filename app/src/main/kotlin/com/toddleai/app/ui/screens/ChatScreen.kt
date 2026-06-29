@@ -2,32 +2,47 @@ package com.toddleai.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.toddleai.app.ToddleAISessionViewModel
+import com.toddleai.app.llm.ChatRole
+import com.toddleai.app.llm.LlmStatus
 import com.toddleai.app.ui.theme.SoftIvory
 import com.toddleai.app.ui.theme.WarmSand
 
@@ -36,21 +51,39 @@ fun ChatScreen(
     sessionViewModel: ToddleAISessionViewModel,
     onBack: () -> Unit,
 ) {
-    val result by sessionViewModel.analysisResult.collectAsState()
-    val selectedQuestion by sessionViewModel.assistantQuestion.collectAsState()
-    val observations = result?.observations.orEmpty()
-    val answer = buildAssistantAnswer(selectedQuestion, observations)
+    val messages by sessionViewModel.chatMessages.collectAsState()
+    val status by sessionViewModel.llmStatus.collectAsState()
+    val generating by sessionViewModel.isGenerating.collectAsState()
+    val pendingQuestion by sessionViewModel.assistantQuestion.collectAsState()
+    var input by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(Unit) { sessionViewModel.primeChat() }
+
+    // If the user arrived via "Ask ToddleAI" with a preset question, send it once the model is ready.
+    LaunchedEffect(status, pendingQuestion) {
+        val q = pendingQuestion
+        if (status == LlmStatus.READY && !q.isNullOrBlank()) {
+            sessionViewModel.clearAssistantQuestion()
+            sessionViewModel.sendChatMessage(q)
+        }
+    }
+
+    LaunchedEffect(messages, generating) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Brush.verticalGradient(listOf(SoftIvory, WarmSand)))
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .statusBarsPadding()
+            .imePadding(),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) {
@@ -58,72 +91,152 @@ fun ChatScreen(
             }
             Text(
                 text = "ToddleAI Assistant",
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
         }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        StatusLine(status)
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+            itemsIndexed(messages) { index, message ->
+                val isStreamingThis = generating && index == messages.lastIndex &&
+                    message.role == ChatRole.ASSISTANT
+                MessageBubble(
+                    text = if (isStreamingThis && message.text.isBlank()) "…" else message.text,
+                    fromUser = message.role == ChatRole.USER,
+                )
+            }
+        }
+
+        if (status == LlmStatus.READY && !generating && messages.size <= 1) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = selectedQuestion ?: "Choose a question below to review this recording.",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = answer,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-                Surface(
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    shape = MaterialTheme.shapes.medium,
-                ) {
-                    Text(
-                        text = "This assistant is bounded to explaining the recording, suggesting recapture, and helping prepare a summary.",
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodySmall,
+                listOf("Is this typical?", "How do I record a better clip?").forEach { prompt ->
+                    SuggestionChip(
+                        onClick = { sessionViewModel.sendChatMessage(prompt) },
+                        label = { Text(prompt) },
                     )
                 }
             }
         }
 
-        listOf(
-            "Explain this recording",
-            "Should I record another video?",
-            "Prepare a doctor summary",
-        ).forEach { question ->
-            Button(
-                onClick = { sessionViewModel.setAssistantQuestion(question) },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(question)
+        InputBar(
+            value = input,
+            onValueChange = { input = it },
+            enabled = status == LlmStatus.READY && !generating,
+            onSend = {
+                if (input.isNotBlank()) {
+                    sessionViewModel.sendChatMessage(input)
+                    input = ""
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun StatusLine(status: LlmStatus) {
+    val text = when (status) {
+        LlmStatus.LOADING -> "Loading the on-device assistant…"
+        LlmStatus.MISSING -> "On-device assistant model isn't installed on this phone."
+        LlmStatus.ERROR -> "The assistant couldn't start on this device."
+        else -> null
+    } ?: return
+
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (status == LlmStatus.LOADING) {
+                CircularProgressIndicator(modifier = Modifier.padding(2.dp), strokeWidth = 2.dp)
             }
+            Text(text, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
-private fun buildAssistantAnswer(
-    question: String?,
-    observations: List<com.toddleai.app.data.models.Observation>,
-): String {
-    val summary = observations.joinToString(" ") {
-        if (it.context.isNotBlank()) "${it.measurement}. ${it.context}" else "${it.measurement}."
-    }.ifBlank {
-        "No analysis result is available yet. Record a walking clip first."
+@Composable
+private fun MessageBubble(
+    text: String,
+    fromUser: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start,
+    ) {
+        Surface(
+            color = if (fromUser) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.widthIn(max = 320.dp),
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (fromUser) {
+                    MaterialTheme.colorScheme.onPrimary
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        }
     }
+}
 
-    return when (question) {
-        "Should I record another video?" ->
-            "Record another video if the result mentioned low data, missing feet, or camera movement. A steady side view with at least five usable steps will usually produce a stronger summary. $summary"
-        "Prepare a doctor summary" ->
-            "ToddleAI observed temporal gait measures from a short home video. $summary This was processed entirely on-device and is intended as an observation from this recording rather than a diagnosis."
-        else ->
-            "Here is the clearest summary from this recording: $summary"
+@Composable
+private fun InputBar(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    onSend: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.weight(1f),
+            placeholder = { Text("Ask about the results…") },
+            enabled = enabled,
+            maxLines = 4,
+        )
+        Box(contentAlignment = Alignment.Center) {
+            FilledIconButton(
+                onClick = onSend,
+                enabled = enabled && value.isNotBlank(),
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+            }
+        }
     }
 }

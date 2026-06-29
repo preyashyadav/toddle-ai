@@ -76,6 +76,20 @@ class ToddleAISessionViewModel(
     private val _assistantQuestion = MutableStateFlow<String?>(null)
     val assistantQuestion: StateFlow<String?> = _assistantQuestion.asStateFlow()
 
+    // --- On-device LLM assistant ---
+    private val llmEngine = com.toddleai.app.llm.LlmEngine()
+
+    private val _chatMessages = MutableStateFlow<List<com.toddleai.app.llm.ChatMessage>>(emptyList())
+    val chatMessages: StateFlow<List<com.toddleai.app.llm.ChatMessage>> = _chatMessages.asStateFlow()
+
+    private val _llmStatus = MutableStateFlow(com.toddleai.app.llm.LlmStatus.IDLE)
+    val llmStatus: StateFlow<com.toddleai.app.llm.LlmStatus> = _llmStatus.asStateFlow()
+
+    private val _isGenerating = MutableStateFlow(false)
+    val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+
+    private var chatPrimed = false
+
     private val _onboardingVisible = MutableStateFlow(true)
     val onboardingVisible: StateFlow<Boolean> = _onboardingVisible.asStateFlow()
 
@@ -208,6 +222,100 @@ class ToddleAISessionViewModel(
 
     fun clearAssistantQuestion() {
         _assistantQuestion.value = null
+    }
+
+    /** Called when the chat screen opens: load the on-device model (once) and seed a greeting. */
+    fun primeChat() {
+        if (chatPrimed) return
+        chatPrimed = true
+
+        if (_chatMessages.value.isEmpty()) {
+            _chatMessages.value = listOf(
+                com.toddleai.app.llm.ChatMessage(
+                    role = com.toddleai.app.llm.ChatRole.ASSISTANT,
+                    text = "Hi! Ask me anything about your child's walking results — what a number means, whether it's typical, or how to get a clearer clip.",
+                ),
+            )
+        }
+
+        when {
+            llmEngine.isLoaded -> _llmStatus.value = com.toddleai.app.llm.LlmStatus.READY
+            !llmEngine.modelAvailable(
+                com.toddleai.app.llm.LlmEngine.MODEL_PATH,
+                com.toddleai.app.llm.LlmEngine.TOKENIZER_PATH,
+            ) -> _llmStatus.value = com.toddleai.app.llm.LlmStatus.MISSING
+            else -> {
+                _llmStatus.value = com.toddleai.app.llm.LlmStatus.LOADING
+                llmEngine.load(
+                    com.toddleai.app.llm.LlmEngine.MODEL_PATH,
+                    com.toddleai.app.llm.LlmEngine.TOKENIZER_PATH,
+                ) { result ->
+                    _llmStatus.value = if (result.isSuccess) {
+                        com.toddleai.app.llm.LlmStatus.READY
+                    } else {
+                        com.toddleai.app.llm.LlmStatus.ERROR
+                    }
+                }
+            }
+        }
+    }
+
+    fun sendChatMessage(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() || _isGenerating.value) return
+        if (_llmStatus.value != com.toddleai.app.llm.LlmStatus.READY) return
+
+        val history = _chatMessages.value +
+            com.toddleai.app.llm.ChatMessage(com.toddleai.app.llm.ChatRole.USER, trimmed)
+        // Add the user message plus an empty assistant bubble we stream tokens into.
+        _chatMessages.value = history + com.toddleai.app.llm.ChatMessage(
+            com.toddleai.app.llm.ChatRole.ASSISTANT, "",
+        )
+        _isGenerating.value = true
+
+        val gaitContext = com.toddleai.app.llm.PromptBuilder.gaitContext(
+            observations = _analysisResult.value?.observations.orEmpty(),
+            childAgeMonths = childAgeMonths() ?: 0,
+        )
+        // Only feed real turns (skip the seeded greeting + the empty streaming bubble) to the model.
+        val modelHistory = history.drop(1)
+        val prompt = com.toddleai.app.llm.PromptBuilder.buildPrompt(modelHistory, gaitContext)
+
+        val builder = StringBuilder()
+        llmEngine.generate(
+            prompt = prompt,
+            seqLen = CHAT_SEQ_LEN,
+            onToken = { token ->
+                builder.append(token)
+                // Show cleaned partial text; the runtime stops on its own at the EOS token, so we do
+                // NOT call stop() here (calling stop() left the module unusable for the next turn).
+                updateLastAssistant(cleanAssistantText(builder.toString()))
+            },
+            onComplete = {
+                updateLastAssistant(cleanAssistantText(builder.toString()).ifBlank { "…" })
+                _isGenerating.value = false
+            },
+            onError = { message ->
+                updateLastAssistant(cleanAssistantText(builder.toString()).ifBlank { "Sorry, I couldn't answer that. $message" })
+                _isGenerating.value = false
+            },
+        )
+    }
+
+    private fun updateLastAssistant(text: String) {
+        val current = _chatMessages.value
+        if (current.isEmpty()) return
+        _chatMessages.value = current.dropLast(1) +
+            com.toddleai.app.llm.ChatMessage(com.toddleai.app.llm.ChatRole.ASSISTANT, text)
+    }
+
+    private fun cleanAssistantText(raw: String): String {
+        var text = raw
+        for (marker in com.toddleai.app.llm.PromptBuilder.STOP_MARKERS) {
+            val idx = text.indexOf(marker)
+            if (idx >= 0) text = text.substring(0, idx)
+        }
+        return text.trim()
     }
 
     fun analysisSourceLabel(): String = when (_sessionMode.value) {
@@ -355,7 +463,12 @@ class ToddleAISessionViewModel(
 
     override fun onCleared() {
         poseEstimator.release()
+        llmEngine.release()
         super.onCleared()
+    }
+
+    private companion object {
+        const val CHAT_SEQ_LEN = 768
     }
 }
 
